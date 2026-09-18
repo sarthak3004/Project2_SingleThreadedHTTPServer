@@ -3,13 +3,12 @@
 #include<unistd.h> //UNIX STD (For POSIX System Calls)
 #include<arpa/inet.h> //sockaddr
 #include<sstream>
+#include<fstream>
 
-bool send_all(int socket_fd, std::string& data) {
+bool send_all(int socket_fd, const char* data, size_t totalBytes) {
     size_t totalSent = 0;
-    const char* ptr = data.c_str();
-    size_t totalBytes = data.size();
     while(totalSent < totalBytes) {
-        ssize_t sent = write(socket_fd, ptr + totalSent, totalBytes - totalSent);
+        ssize_t sent = write(socket_fd, data + totalSent, totalBytes - totalSent);
             if(sent < 0) {
                 if(errno == EINTR) continue;
                 return false;
@@ -18,6 +17,29 @@ bool send_all(int socket_fd, std::string& data) {
             totalSent += static_cast<size_t>(sent);
     }
     return true;
+}
+
+std::string getMimeType(const std::string& path) {
+    if(path.rfind(".html") != std::string::npos || path.rfind(".htm") != std::string::npos) return "text/html";
+    if(path.rfind(".css") != std::string::npos) return "text/css";
+    if(path.rfind(".js") != std::string::npos) return "application/javascript";
+    if(path.rfind(".png") != std::string::npos) return "image/png";
+    if(path.rfind(".jpg") != std::string::npos || path.rfind(".jpeg") != std::string::npos) return "image/jpeg";
+    if(path.rfind(".gif") != std::string::npos) return "image/gif";
+    if(path.rfind(".ico") != std::string::npos) return "image/x-icon";
+    return "text/plain";
+}
+
+void sendErrorResponse(int client_fd, int statusCode, const std::string& statusText, const std::string& message) {
+    std::string body = "<html><body><h1>" + std::to_string(statusCode) + " " + statusText + "</h1><p>" + message + "</p></body></html>";
+    std::string header = 
+        "HTTP/1.1" + std::to_string(statusCode) + " " + statusText + "\r\n"
+        "Content-Type: text/html\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "Connection: close\r\n\r\n";
+    
+    send_all(client_fd, header.data(), header.size());
+    send_all(client_fd, body.data(), body.size());
 }
 
 int main() {
@@ -84,39 +106,45 @@ int main() {
         std::cout << "\n[Request] Method: " << method
                   << "| Path: " << path
                   << "| Version: " << version << "\n";
-
-        
-        std::string response;
         if(method != "GET") {
-            std::string body = "<h1>501 Not Implemented</h1><p>Only GET is supported.</p>";
-            response = 
-                "HTTP/1.1 501 Not Implemented\r\n"
-                "Content-Type: text/html\r\n"
-                "Content-Length: " + std::to_string(body.size()) + "\r\n"
-                "Connection: close\r\n"
-                "\r\n" + 
-                body;
-        } else {
-            std::string body = 
-                "<!DOCTYPE html><html><body>"
-                "<h1>Hello from C++ HTTP Server!</h1>"
-                "<p>Successfully parsed request line:</p>"
-                "<ul>"
-                "<li><b>Method:</b> " + method + "</li>"
-                "<li><b>Path:</b> " + path + "</li>"
-                "<li><b>Version:</b> " + version + "</li>"
-                "</ul>"
-                "</body></html>";
-
-            response = 
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/html\r\n"
-                "Content-Length: " + std::to_string(body.size()) + "\r\n"
-                "Connection: close\r\n"
-                "\r\n" + 
-                body;
+            sendErrorResponse(client_fd, 501, "Not Implemented", "Only GET Method");
+            close(client_fd);
+            continue;
         }
-        send_all(client_fd, response);
+        if(path.find("..") != std::string::npos) {
+            sendErrorResponse(client_fd, 403, "Forbidden", "Access Denied");
+            close(client_fd);
+            continue;
+        }
+
+        if(path == "/") path = "/index.html";
+        std::string filePath = "./public" + path;
+
+        std::ifstream file(filePath, std::ios::binary | std::ios::ate);
+        if(!file.is_open()) {
+            sendErrorResponse(client_fd, 404, "Not Found", "The requested file was not found.");
+            close(client_fd);
+            continue;
+        }
+        std::streamsize fileSize = file.tellg();
+        file.seekg(0, std::ios::beg);
+
+        std::vector<char> fileData(static_cast<size_t>(fileSize));
+        if(!file.read(fileData.data(), fileSize)) {
+            sendErrorResponse(client_fd, 500, "Internal Server Error", "Failed to read file.");
+            close(client_fd);
+            continue;
+        }
+
+        std::string mimeType = getMimeType(path);
+        std::string headers = 
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: " + mimeType + "\r\n"
+            "Content-Length: " + std::to_string(fileSize) + "\r\n"
+            "Connection: close\r\n\r\n";
+        send_all(client_fd, headers.data(), headers.size());
+        send_all(client_fd, fileData.data(), fileSize);
+
         close(client_fd);
         std::cout << "Client Discconnected.\n";
     }
