@@ -2,6 +2,23 @@
 #include<sys/socket.h>
 #include<unistd.h> //UNIX STD (For POSIX System Calls)
 #include<arpa/inet.h> //sockaddr
+#include<sstream>
+
+bool send_all(int socket_fd, std::string& data) {
+    size_t totalSent = 0;
+    const char* ptr = data.c_str();
+    size_t totalBytes = data.size();
+    while(totalSent < totalBytes) {
+        ssize_t sent = write(socket_fd, ptr + totalSent, totalBytes - totalSent);
+            if(sent < 0) {
+                if(errno == EINTR) continue;
+                return false;
+            }
+            if(sent == 0) return false;
+            totalSent += static_cast<size_t>(sent);
+    }
+    return true;
+}
 
 int main() {
     int server_fd = socket( //fd(file descriptor) because everythin is file in UNIX/LINUX. Network socket is file. Therefore, operators like read, write, open, close.
@@ -54,21 +71,52 @@ int main() {
         }
 
         std::cout << "Client Connected.\n";
-        char buffer[1024];
+        char buffer[2048];
         ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer)-1);
-        if(bytes_read > 0) {
-            buffer[bytes_read] = '\0';
-            std::cout << "Request Received.\n";
+        if(bytes_read <= 0) {
+            close(client_fd);
+            continue;
         }
-        std::string body = "<h1>Hello from my C++ HTTP Server!</h1>\n";
-        std::string response = 
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html\r\n"
-        "Content-Length: " + std::to_string(body.size()) + "\r\n"
-        "Connection: close\r\n"
-        "\r\n" + 
-        body;
-        write(client_fd, response.c_str(), response.size()); //c_str -> returns const char*
+        buffer[bytes_read] = '\0';
+        std::istringstream request_stream(buffer);
+        std::string method, path, version;
+        request_stream >> method >> path >> version;
+        std::cout << "\n[Request] Method: " << method
+                  << "| Path: " << path
+                  << "| Version: " << version << "\n";
+
+        
+        std::string response;
+        if(method != "GET") {
+            std::string body = "<h1>501 Not Implemented</h1><p>Only GET is supported.</p>";
+            response = 
+                "HTTP/1.1 501 Not Implemented\r\n"
+                "Content-Type: text/html\r\n"
+                "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                "Connection: close\r\n"
+                "\r\n" + 
+                body;
+        } else {
+            std::string body = 
+                "<!DOCTYPE html><html><body>"
+                "<h1>Hello from C++ HTTP Server!</h1>"
+                "<p>Successfully parsed request line:</p>"
+                "<ul>"
+                "<li><b>Method:</b> " + method + "</li>"
+                "<li><b>Path:</b> " + path + "</li>"
+                "<li><b>Version:</b> " + version + "</li>"
+                "</ul>"
+                "</body></html>";
+
+            response = 
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html\r\n"
+                "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                "Connection: close\r\n"
+                "\r\n" + 
+                body;
+        }
+        send_all(client_fd, response);
         close(client_fd);
         std::cout << "Client Discconnected.\n";
     }
